@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}#{{ exp.id }} {{ exp.name }}{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="btn-row" style="justify-content:space-between">
+    <div>
+      <h1>#{{ exp.id }} {{ exp.name }}</h1>
+      <div class="muted">
+        {{ exp.video }} ·
+        <span class="status {{ exp.status }}">{{ STATUS_TEXT.get(exp.status, exp.status) }}</span>
+        {% if exp.status in ("running", "queued") %}{{ ((exp.progress or 0) * 100)|round(1) }}%{% endif %}
+        · 建立 {{ exp.created_at }}{% if exp.finished_at %} · 結束 {{ exp.finished_at }}{% endif %}
+        {% if exp.batch %} · <a href="{{ url_for('compare', batch=exp.batch) }}">批次 {{ exp.batch }}</a>{% endif %}
+      </div>
+      {% if exp.error %}<div class="flash error" style="margin-top:8px">錯誤: {{ exp.error }}</div>{% endif %}
+    </div>
+    <div class="btn-row">
+      {% if exp.status in ("running", "queued") %}
+        <form method="post" action="{{ url_for('stop_experiment', exp_id=exp.id) }}"><button>停止</button></form>
+      {% endif %}
+      <a class="btn" href="{{ url_for('index', **{'from': exp.id}) }}">複製參數建新實驗</a>
+      <form method="post" action="{{ url_for('rerun_experiment', exp_id=exp.id) }}"><button>用相同參數重跑</button></form>
+      <a class="btn" href="{{ url_for('export_violations', id=exp.id) }}">違規 CSV</a>
+      <a class="btn" href="{{ url_for('export_tracks', id=exp.id) }}">追蹤 CSV</a>
+      {% if exp.status != "running" %}
+      <form method="post" action="{{ url_for('delete_experiments') }}" onsubmit="return confirm('確定刪除這個實驗?')">
+        <input type="hidden" name="id" value="{{ exp.id }}"><button class="danger">刪除</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>指標 <span class="muted small">(依下方人工標註即時計算;recall 需要在「影片與真值」填實際違規數)</span></h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>違規類型</th><th class="num">偵測數</th><th class="num">正確</th><th class="num">誤報</th><th class="num">重複</th>
+      <th class="num">未標註</th><th class="num">真值</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th></tr></thead>
+    <tbody>
+    {% for vt, vt_name in VIOLATION_TYPES.items() %}{% set m = metrics.per_type[vt] %}
+      <tr><td>{{ vt_name }}</td><td class="num">{{ m.detected }}</td><td class="num">{{ m.tp }}</td><td class="num">{{ m.fp }}</td>
+        <td class="num">{{ m.dup }}</td><td class="num">{{ m.unlabeled }}</td><td class="num">{{ m.gt|fmt }}</td>
+        <td class="num">{{ m.precision|pct }}</td><td class="num">{{ m.recall|pct }}</td><td class="num">{{ m.f1|fmt }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="metric-grid" style="margin-top:14px">
+    <div class="metric"><div class="v">{{ metrics.plate.fixed_acc|pct }}</div><div class="k">車牌完全正確 (修正後,{{ metrics.plate.labeled }} 筆有填真值)</div></div>
+    <div class="metric"><div class="v">{{ metrics.plate.raw_acc|pct }}</div><div class="k">車牌完全正確 (OCR 原始)</div></div>
+    <div class="metric"><div class="v">{{ metrics.plate.char_acc|pct }}</div><div class="k">車牌字元正確率</div></div>
+    <div class="metric"><div class="v">{{ metrics.plate.clean_rate|pct }}</div><div class="k">車牌格式正常率</div></div>
+    <div class="metric"><div class="v">{{ metrics.plate.avg_conf|fmt }}</div><div class="k">OCR 平均信心值</div></div>
+    <div class="metric"><div class="v">{{ exp.avg_ms_per_frame|fmt }}</div><div class="k">每幀總耗時 ms (追蹤 {{ exp.avg_track_ms|fmt }})</div></div>
+    <div class="metric"><div class="v">{{ exp.avg_plate_ms|fmt }} / {{ exp.avg_ocr_ms|fmt }}</div><div class="k">車牌偵測 / OCR 每次 ms</div></div>
+    <div class="metric"><div class="v">{{ exp.processed_frames|fmt }}</div><div class="k">處理幀數 (共 {{ exp.elapsed_sec|fmt }} 秒)</div></div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="btn-row" style="justify-content:space-between; margin-bottom:10px">
+    <h2 style="margin:0">違規紀錄 ({{ violations|length }})</h2>
+    <div class="btn-row">
+      <select id="f-type" style="width:auto"><option value="">全部類型</option>
+        {% for vt, vt_name in VIOLATION_TYPES.items() %}<option value="{{ vt }}">{{ vt_name }}</option>{% endfor %}</select>
+      <select id="f-label" style="width:auto"><option value="">全部標註</option><option value="none">未標註</option>
+        {% for k, n in LABELS.items() %}<option value="{{ k }}">{{ n }}</option>{% endfor %}</select>
+    </div>
+  </div>
+  <div class="table-wrap">
+  <table id="vio-table">
+    <thead><tr><th>截圖</th><th>類型</th><th class="num">時間(秒)</th><th class="num">Track</th><th class="num">偵測信心</th>
+      <th>車牌 (原始 → 修正)</th><th class="num">OCR 信心</th><th>狀態</th><th class="num">車速</th>
+      <th>標註</th><th>正確車牌</th><th>備註</th></tr></thead>
+    <tbody>
+    {% for v in violations %}
+      <tr data-vid="{{ v.id }}" data-type="{{ v.violation_type }}" data-label="{{ v.label or 'none' }}"
+          data-fixed="{{ v.plate_fixed or '' }}" class="{% if v.label %}lab-{{ v.label }}{% endif %}">
+        <td>
+          <a href="{{ url_for('experiment_file', exp_id=exp.id, filename=v.vehicle_img) }}" target="_blank"><img class="thumb" loading="lazy" src="{{ url_for('experiment_file', exp_id=exp.id, filename=v.vehicle_img) }}"></a>
+          <a href="{{ url_for('experiment_file', exp_id=exp.id, filename=v.plate_img) }}" target="_blank"><img class="thumb plate" loading="lazy" src="{{ url_for('experiment_file', exp_id=exp.id, filename=v.plate_img) }}"></a>
+        </td>
+        <td>{{ VIOLATION_TYPES.get(v.violation_type, v.violation_type) }}</td>
+        <td class="num">{{ v.time_sec }}</td>
+        <td class="num">{{ v.track_id }}</td>
+        <td class="num">{{ v.det_conf|fmt }}</td>
+        <td><span class="muted">{{ v.plate_raw or "(讀取失敗)" }}</span> → <b>{{ v.plate_fixed or "–" }}</b>
+          {% if v.warnings %}<div class="small muted" title="{{ v.warnings }}">{{ v.warnings|truncate(40) }}</div>{% endif %}</td>
+        <td class="num">{{ v.plate_conf|fmt }}</td>
+        <td class="small">{{ v.status_text }}</td>
+        <td class="num">{{ v.speed_kmh|fmt }}</td>
+        <td class="label-btns btn-row">
+          {% for k, n in LABELS.items() %}<button type="button" data-label="{{ k }}" class="{% if v.label == k %}on{% endif %}">{{ n }}</button>{% endfor %}
+        </td>
+        <td><div class="plate-gt">
+          <input type="text" class="gt-input" value="{{ v.plate_gt or '' }}" placeholder="ABC-1234">
+          <button type="button" class="gt-same" title="OCR 修正後的車牌是對的">✓</button>
+        </div></td>
+        <td><input type="text" class="note-input" value="{{ v.note or '' }}"></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="12" class="muted">{% if exp.status in ("running", "queued") %}執行中,偵測到違規會出現在這裡{% else %}沒有偵測到違規{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="small muted" style="margin-top:8px">
+    正確 = 真的違規 · 誤報 = 不是違規 (或偵測錯人/車) · 重複 = 同一台車被追蹤斷掉又算一次。Precision = 正確 / (正確+誤報+重複)
+  </div>
+</section>
+
+<div class="two-col">
+  <section class="panel">
+    <h2>參數 <span class="muted small">(黃底 = 跟預設值不同)</span></h2>
+    <table class="kv">
+      {% for key, label, typ, _g, _h in specs %}
+        <tr class="{% if exp.params.get(key) != defaults[key] %}changed{% endif %}">
+          <td>{{ label }}</td><td style="word-break:break-all">{{ exp.params.get(key) }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  <section class="panel">
+    <h2>名稱與筆記</h2>
+    <form method="post" action="{{ url_for('save_notes', exp_id=exp.id) }}">
+      <input type="text" name="name" value="{{ exp.name }}" style="margin-bottom:8px">
+      <textarea name="notes" rows="6" placeholder="這次實驗的觀察、要改進的地方...">{{ exp.notes or '' }}</textarea>
+      <button style="margin-top:8px">儲存</button>
+    </form>
+    {% if exp.output_video %}
+      <h2 style="margin-top:18px">標註影片</h2>
+      <video controls preload="metadata" src="{{ url_for('experiment_file', exp_id=exp.id, filename=exp.output_video) }}"></video>
+      <div class="small"><a href="{{ url_for('experiment_file', exp_id=exp.id, filename=exp.output_video) }}" download>下載影片</a>
+        <span class="muted">(瀏覽器播不出來的話下載後用播放器開)</span></div>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <details>
+    <summary>車輛追蹤統計 ({{ tracks|length }} 個 track)</summary>
+    <div class="table-wrap" style="margin-top:10px">
+    <table>
+      <thead><tr><th class="num">Track</th><th>類別</th><th class="num">出現(秒)</th><th class="num">消失(秒)</th>
+        <th class="num">幀數</th><th class="num">平均車速</th><th class="num">最高車速</th></tr></thead>
+      <tbody>
+      {% for t in tracks %}
+        <tr><td class="num">{{ t.track_id }}</td><td>{{ t.class_name }}</td><td class="num">{{ t.first_sec }}</td>
+          <td class="num">{{ t.last_sec }}</td><td class="num">{{ t.frames }}</td>
+          <td class="num">{{ t.avg_speed_kmh|fmt }}</td><td class="num">{{ t.max_speed_kmh|fmt }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+</section>
+
+<section class="panel">
+  <details {% if exp.status == "failed" %}open{% endif %}>
+    <summary>執行紀錄 (log)</summary>
+    <pre class="log">{{ log_text or "(沒有紀錄)" }}</pre>
+  </details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const norm = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+async function save(vid, data) {
+  const res = await fetch(`/api/violations/${vid}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+  if (!res.ok) alert('儲存失敗');
+}
+
+function markPlate(row) {
+  const box = row.querySelector('.plate-gt');
+  const gt = norm(box.querySelector('input').value);
+  box.classList.toggle('match', !!gt && gt === norm(row.dataset.fixed));
+  box.classList.toggle('mismatch', !!gt && gt !== norm(row.dataset.fixed));
+}
+
+document.querySelectorAll('#vio-table tr[data-vid]').forEach(row => {
+  const vid = row.dataset.vid;
+  markPlate(row);
+
+  row.querySelectorAll('.label-btns button').forEach(btn => btn.addEventListener('click', async () => {
+    const label = btn.classList.contains('on') ? '' : btn.dataset.label;   // 再按一次取消
+    await save(vid, {label});
+    row.querySelectorAll('.label-btns button').forEach(b => b.classList.toggle('on', b.dataset.label === label));
+    row.className = label ? `lab-${label}` : '';
+    row.dataset.label = label || 'none';
+  }));
+
+  const gtInput = row.querySelector('.gt-input');
+  gtInput.addEventListener('change', async () => {
+    gtInput.value = gtInput.value.trim().toUpperCase();
+    await save(vid, {plate_gt: gtInput.value});
+    markPlate(row);
+  });
+  row.querySelector('.gt-same').addEventListener('click', async () => {
+    if (!row.dataset.fixed) return;
+    gtInput.value = row.dataset.fixed;
+    await save(vid, {plate_gt: gtInput.value});
+    markPlate(row);
+  });
+
+  const noteInput = row.querySelector('.note-input');
+  noteInput.addEventListener('change', () => save(vid, {note: noteInput.value}));
+});
+
+function applyFilter() {
+  const t = document.getElementById('f-type').value, l = document.getElementById('f-label').value;
+  document.querySelectorAll('#vio-table tr[data-vid]').forEach(row => {
+    row.style.display = (!t || row.dataset.type === t) && (!l || row.dataset.label === l) ? '' : 'none';
+  });
+}
+document.getElementById('f-type').addEventListener('change', applyFilter);
+document.getElementById('f-label').addEventListener('change', applyFilter);
+
+// 執行中:有新違規或狀態改變就重新整理頁面
+{% if exp.status in ("running", "queued") %}
+let last = null;
+setInterval(async () => {
+  try {
+    const [e] = await (await fetch('/api/experiments?ids={{ exp.id }}')).json();
+    const key = e.status + JSON.stringify(e.counts);
+    if (last !== null && key !== last) location.reload();
+    last = key;
+  } catch (err) {}
+}, 3000);
+{% endif %}
+</script>
+{% endblock %}

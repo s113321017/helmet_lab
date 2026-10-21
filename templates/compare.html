@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}比較實驗{% endblock %}
+{% block content %}
+<style>
+  .viz {
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#eda100; --s4:#e87ba4; --s5:#008300; --s6:#6250d6; --s7:#e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    .viz { --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#c98500; --s4:#d55181; --s5:#008300; --s6:#9085e9; --s7:#e66767; }
+  }
+  .viz-tabs { margin-bottom: 12px; }
+  .viz-tabs button[aria-selected=true] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .viz-title { margin: 4px 0 8px; font-size: 15px; }
+  .viz-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
+  .viz-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  #viz-chart svg { display: block; width: 100%; height: auto; }
+  #viz-chart text { fill: var(--muted); font-size: 12px; }
+  #viz-chart text.val { fill: var(--text); font-weight: 600; }
+  #viz-chart .grid { stroke: var(--border); stroke-width: 1; }
+  #viz-chart .bar { transition: opacity .1s; }
+  #viz-chart.has-hover .bar { opacity: .45; }
+  #viz-chart.has-hover .bar.on { opacity: 1; }
+  #viz-chart .hit { fill: transparent; cursor: default; }
+  #viz-chart .hit:focus { outline: none; stroke: var(--accent); stroke-width: 2; }
+  .s0{fill:var(--s0)} .s1{fill:var(--s1)} .s2{fill:var(--s2)} .s3{fill:var(--s3)} .s4{fill:var(--s4)} .s5{fill:var(--s5)} .s6{fill:var(--s6)} .s7{fill:var(--s7)}
+  i.s0{background:var(--s0)} i.s1{background:var(--s1)} i.s2{background:var(--s2)} i.s3{background:var(--s3)} i.s4{background:var(--s4)} i.s5{background:var(--s5)} i.s6{background:var(--s6)} i.s7{background:var(--s7)}
+  .viz-tip { position: fixed; z-index: 50; pointer-events: none; background: var(--panel); color: var(--text);
+             border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+             box-shadow: 0 4px 14px rgba(0,0,0,.18); max-width: 320px; }
+  .viz-tip .t { font-weight: 600; margin-bottom: 2px; }
+  .viz-tip .sub { color: var(--muted); margin-bottom: 4px; }
+  .viz-tip .row { display: flex; align-items: center; gap: 8px; }
+  .viz-tip .key { display: inline-block; width: 12px; height: 3px; border-radius: 2px; }
+  .viz-tip .row b { font-size: 13px; }
+  .viz-tip .row span { color: var(--muted); }
+  .viz-table, .viz-plates { margin-top: 10px; }
+  .viz-plates { max-height: 340px; overflow: auto; }
+</style>
+<section class="panel">
+  <div class="btn-row" style="justify-content:space-between; margin-bottom:12px">
+    <h2 style="margin:0">比較實驗 ({{ rows|length }})</h2>
+    {% if rows %}<a class="btn" href="{{ url_for('export_compare', ids=ids) }}">匯出這張表 CSV</a>{% endif %}
+  </div>
+  {% if not rows %}
+    <p class="muted">到「實驗」頁勾選要比較的實驗按「比較選取」,或點實驗的批次連結。</p>
+  {% else %}
+  <div class="viz" id="viz">
+    <div class="btn-row viz-tabs" role="tablist" id="viz-tabs">
+      <button type="button" role="tab" data-view="violations" aria-selected="true">違規選項</button>
+      <button type="button" role="tab" data-view="plate" aria-selected="false">車牌號碼</button>
+      <button type="button" role="tab" data-view="maxspeed" aria-selected="false">最快車速</button>
+      <button type="button" role="tab" data-view="avgspeed" aria-selected="false">平均車速</button>
+    </div>
+    <h3 id="viz-title" class="viz-title"></h3>
+    <div id="viz-legend" class="viz-legend"></div>
+    <div id="viz-chart"></div>
+    <div id="viz-empty" class="muted" hidden></div>
+    <details class="viz-table"><summary>資料表</summary><div class="table-wrap" id="viz-table"></div></details>
+    <div id="viz-plates" class="table-wrap viz-plates" hidden></div>
+  </div>
+  <div id="viz-tip" class="viz-tip" hidden></div>
+  <h3 class="viz-title" style="margin-top:22px">指標總表</h3>
+  <p class="muted small">只列出這些實驗之間有差異的參數{% if not diff_keys %} (這些實驗參數完全相同){% endif %}。P = Precision、R = Recall,都需要先在實驗頁標註。</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th rowspan="2">#</th><th rowspan="2">名稱</th><th rowspan="2">影片</th><th rowspan="2">狀態</th>
+        {% for k in diff_keys %}<th rowspan="2" class="changed">{{ k }}</th>{% endfor %}
+        {% for vt, vt_name in VIOLATION_TYPES.items() %}<th colspan="4" style="text-align:center">{{ vt_name }}</th>{% endfor %}
+        <th colspan="2" style="text-align:center">車牌</th>
+        <th rowspan="2" class="num">ms/幀</th>
+      </tr>
+      <tr>
+        {% for vt in VIOLATION_TYPES %}<th class="num">偵測</th><th class="num">未標</th><th class="num">P</th><th class="num">R</th>{% endfor %}
+        <th class="num">完全正確</th><th class="num">字元</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for e, m in rows %}
+      <tr>
+        <td><a href="{{ url_for('experiment_detail', exp_id=e.id) }}">{{ e.id }}</a></td>
+        <td>{{ e.name }}</td><td>{{ e.video }}</td>
+        <td><span class="status {{ e.status }}">{{ STATUS_TEXT.get(e.status, e.status) }}</span></td>
+        {% for k in diff_keys %}<td>{{ e.params.get(k) }}</td>{% endfor %}
+        {% for vt in VIOLATION_TYPES %}{% set t = m.per_type[vt] %}
+          <td class="num">{{ t.detected }}</td><td class="num muted">{{ t.unlabeled }}</td>
+          <td class="num">{{ t.precision|pct }}</td><td class="num">{{ t.recall|pct }}</td>
+        {% endfor %}
+        <td class="num">{{ m.plate.fixed_acc|pct }}</td><td class="num">{{ m.plate.char_acc|pct }}</td>
+        <td class="num">{{ e.avg_ms_per_frame|fmt }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+const EXPS = {{ chart|tojson }};
+const TYPES = {{ chart_types|tojson }};
+const SVGNS = 'http://www.w3.org/2000/svg';
+const VIEWS = {
+  violations: {title: '各違規類型偵測數 (台)',
+    series: () => TYPES.map(t => ({name: t.name, get: e => e.violations[t.key]}))},
+  plate: {title: '車牌辨識結果 (筆)',
+    series: () => [{name: '格式正常', get: e => e.plate.clean}, {name: '格式異常', get: e => e.plate.unclean}]},
+  maxspeed: {title: '最快車速 (km/h)', series: () => [{name: '最快車速', get: e => e.speed.max}]},
+  avgspeed: {title: '平均車速 (km/h)', series: () => [{name: '平均車速', get: e => e.speed.avg}]},
+};
+let current = 'violations';
+const tip = document.getElementById('viz-tip');
+
+function svg(tag, attrs, parent, text) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function fmtNum(v) { return v == null ? '–' : (Number.isInteger(v) ? String(v) : v.toFixed(1)); }
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+function expLabel(e) {
+  const diff = Object.entries(e.diff).map(([k, v]) => k + '=' + v).join(', ');
+  return diff ? '#' + e.id + ' ' + diff : e.label;
+}
+// 圓角只做在資料端 (右側), 靠基線的一側保持直角
+function barPath(x, y, w, h) {
+  const r = Math.min(4, w, h / 2);
+  return `M${x},${y}h${w - r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 ${-r},${r}h${-(w - r)}z`;
+}
+function showTip(e, series, ev) {
+  tip.replaceChildren();
+  const t = document.createElement('div'); t.className = 't'; t.textContent = expLabel(e); tip.appendChild(t);
+  const sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = e.video; tip.appendChild(sub);
+  series.forEach((s, i) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const key = document.createElement('i'); key.className = 'key s' + i; key.style.background = 'var(--s' + i + ')';
+    row.appendChild(key);
+    const b = document.createElement('b'); b.textContent = fmtNum(s.get(e)); row.appendChild(b);
+    const n = document.createElement('span'); n.textContent = s.name; row.appendChild(n);
+    tip.appendChild(row);
+  });
+  tip.hidden = false;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const x = ev.clientX || r.left + 40, y = ev.clientY || r.top + r.height / 2;
+  tip.style.left = Math.max(8, Math.min(x + 14, window.innerWidth - tip.offsetWidth - 8)) + 'px';
+  tip.style.top = Math.max(8, Math.min(y + 14, window.innerHeight - tip.offsetHeight - 8)) + 'px';
+}
+function renderChart(view) {
+  const cfg = VIEWS[view], series = cfg.series();
+  const host = document.getElementById('viz-chart');
+  host.replaceChildren(); host.classList.remove('has-hover'); tip.hidden = true;
+  document.getElementById('viz-title').textContent = cfg.title;
+  const legend = document.getElementById('viz-legend');
+  legend.replaceChildren();
+  if (series.length > 1) series.forEach((s, i) => {
+    const sp = document.createElement('span'), sw = document.createElement('i');
+    sw.className = 's' + i; sp.appendChild(sw); sp.appendChild(document.createTextNode(s.name)); legend.appendChild(sp);
+  });
+  const values = EXPS.flatMap(e => series.map(s => s.get(e))).filter(v => v != null);
+  const empty = document.getElementById('viz-empty');
+  empty.hidden = values.length > 0;
+  if (!values.length) empty.textContent = '這些實驗沒有可畫的資料' + (view.endsWith('speed') ? ' (需要啟用測速的實驗)' : '');
+  renderTable(series);
+  renderPlates(view);
+  if (!values.length) return;
+
+  const W = Math.max(host.clientWidth, 320), labelW = Math.min(190, Math.round(W * 0.34)), padR = 56;
+  const barH = 14, gap = 2, groupGap = 16, top = 22;
+  const rowH = series.length * (barH + gap) - gap + groupGap, H = top + EXPS.length * rowH;
+  const max = niceMax(Math.max(...values)), plotW = W - labelW - padR;
+  const sx = v => (v / max) * plotW;
+  const root = svg('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': cfg.title}, host);
+  for (let i = 0; i <= 4; i++) {
+    const x = labelW + plotW * i / 4;
+    svg('line', {class: 'grid', x1: x, x2: x, y1: top - 6, y2: H - groupGap / 2}, root);
+    svg('text', {x, y: 12, 'text-anchor': 'middle'}, root, fmtNum(max * i / 4));
+  }
+  EXPS.forEach((e, gi) => {
+    const y0 = top + gi * rowH;
+    const label = expLabel(e), short = label.length > 22 ? label.slice(0, 21) + '…' : label;
+    const lt = svg('text', {x: labelW - 8, y: y0 + (series.length * (barH + gap) - gap) / 2 + 4, 'text-anchor': 'end'}, root, short);
+    svg('title', {}, lt, label);
+    const bars = [];
+    series.forEach((s, si) => {
+      const v = s.get(e), y = y0 + si * (barH + gap);
+      if (v == null) { svg('text', {x: labelW + 6, y: y + 11}, root, '–'); return; }
+      const w = sx(v);
+      if (w > 0) bars.push(svg('path', {class: 'bar s' + si, d: barPath(labelW, y, Math.max(w, 1), barH)}, root));
+      svg('text', {class: 'val', x: labelW + w + 5, y: y + 11}, root, fmtNum(v));
+    });
+    const hit = svg('rect', {class: 'hit', x: 0, y: y0 - groupGap / 2, width: W, height: rowH, tabindex: 0,
+                             'aria-label': label + ': ' + series.map(s => s.name + ' ' + fmtNum(s.get(e))).join(', ')}, root);
+    const on = ev => { host.classList.add('has-hover'); bars.forEach(b => b.classList.add('on')); showTip(e, series, ev); };
+    const off = () => { host.classList.remove('has-hover'); bars.forEach(b => b.classList.remove('on')); tip.hidden = true; };
+    hit.addEventListener('pointerenter', on); hit.addEventListener('pointermove', on);
+    hit.addEventListener('pointerleave', off); hit.addEventListener('focus', on); hit.addEventListener('blur', off);
+  });
+}
+function renderTable(series) {
+  const host = document.getElementById('viz-table');
+  host.replaceChildren();
+  const table = document.createElement('table'), head = table.createTHead().insertRow();
+  ['實驗', '影片', ...series.map(s => s.name)].forEach(h => { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); });
+  const body = table.createTBody();
+  EXPS.forEach(e => {
+    const r = body.insertRow();
+    [expLabel(e), e.video].forEach(v => r.insertCell().textContent = v);
+    series.forEach(s => { const c = r.insertCell(); c.className = 'num'; c.textContent = fmtNum(s.get(e)); });
+  });
+  host.appendChild(table);
+}
+// 車牌分頁: 圖表下方列出實際辨識到的車牌號碼
+function renderPlates(view) {
+  const host = document.getElementById('viz-plates');
+  host.replaceChildren();
+  host.hidden = view !== 'plate';
+  if (view !== 'plate') return;
+  const table = document.createElement('table'), head = table.createTHead().insertRow();
+  ['實驗', '違規', '車牌 (修正後)', 'OCR 原始', '信心', '格式'].forEach(h => { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); });
+  const body = table.createTBody();
+  EXPS.forEach(e => e.plate.list.forEach(p => {
+    const r = body.insertRow();
+    [expLabel(e), p.type, p.fixed || '–', p.raw || '–', p.conf == null ? '–' : p.conf.toFixed(2), p.clean ? '正常' : '異常']
+      .forEach(v => r.insertCell().textContent = v);
+  }));
+  if (!body.rows.length) { host.textContent = '沒有辨識到車牌'; return; }
+  host.appendChild(table);
+}
+document.querySelectorAll('#viz-tabs button').forEach(b => b.addEventListener('click', () => {
+  current = b.dataset.view;
+  document.querySelectorAll('#viz-tabs button').forEach(x => x.setAttribute('aria-selected', x === b));
+  renderChart(current);
+}));
+let resizeTimer;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => renderChart(current), 150); });
+if (EXPS.length) renderChart(current);
+</script>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}影片與真值{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>上傳影片</h2>
+  <form method="post" action="{{ url_for('upload_video') }}" enctype="multipart/form-data" class="btn-row">
+    <input type="file" name="file" accept="video/*">
+    <button class="primary">上傳到 test_videos/</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>影片與真值</h2>
+  <p class="muted small">
+    自己看影片數出每種違規實際有幾台車,填進來後實驗就能算 Recall (抓到的正確違規 / 實際違規數)。
+    不適用的類型留空 (例如這支影片不是禁行路段)。
+  </p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>預覽</th><th>影片</th><th>解析度</th><th class="num">FPS</th><th class="num">長度(秒)</th><th class="num">總幀數</th>
+      {% for vt, vt_name in VIOLATION_TYPES.items() %}<th>實際{{ vt_name }}</th>{% endfor %}<th></th></tr></thead>
+    <tbody>
+    {% for v in videos %}
+      {% set fid = "gt-" ~ loop.index0 %}
+      <tr>
+        <td><video class="hover-preview" muted playsinline preload="metadata"
+                   src="{{ url_for('video_file', filename=v.name) }}#t=0.1"></video></td>
+        <td>{{ v.name }}</td><td>{{ v.size }}</td><td class="num">{{ v.fps }}</td>
+        <td class="num">{{ v.duration|fmt }}</td><td class="num">{{ v.frames }}</td>
+        {% for vt in VIOLATION_TYPES %}
+          <td><input type="number" min="0" name="{{ vt }}" form="{{ fid }}" value="{{ v.gt.get(vt, '') }}" style="width:80px"></td>
+        {% endfor %}
+        <td>
+          <form id="{{ fid }}" method="post" action="{{ url_for('save_video_gt') }}">
+            <input type="hidden" name="video" value="{{ v.name }}"><button>儲存</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="10" class="muted">test_videos/ 裡沒有影片</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

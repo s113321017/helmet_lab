@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>建立實驗</h2>
+  <form method="post" action="{{ url_for('create_experiments') }}">
+    <div class="field" style="grid-template-columns: 130px minmax(0, 420px)">
+      <label for="name">實驗名稱</label>
+      <input type="text" id="name" name="name" placeholder="留空自動用時間命名">
+    </div>
+
+    <div style="margin-top:12px">影片 <span class="muted small">(可複選,每支影片各建一個實驗;影片放在 test_videos/ 或到「影片與真值」上傳)</span></div>
+    <div class="video-picks">
+      {% for v in videos %}
+        <label class="video-pick">
+          <video class="hover-preview" muted playsinline preload="metadata"
+                 src="{{ url_for('video_file', filename=v) }}#t=0.1"></video>
+          <span><input type="checkbox" name="videos" value="{{ v }}" {% if v in prefill_videos %}checked{% endif %}> {{ v }}</span>
+        </label>
+      {% else %}
+        <span class="muted">test_videos/ 裡沒有影片</span>
+      {% endfor %}
+    </div>
+
+    <datalist id="models">{% for m in model_choices %}<option value="{{ m }}">{% endfor %}</datalist>
+    <datalist id="homographies">{% for m in homography_choices %}<option value="{{ m }}">{% endfor %}</datalist>
+    <div class="param-groups">
+      {% for group, items in specs|groupby(3) %}
+      <fieldset>
+        <legend>{{ group }}</legend>
+        {% for key, label, typ, _g, help in items %}
+        <div class="field">
+          <label for="p-{{ key }}">{{ label }}</label>
+          {% if typ == "bool" %}
+            <input type="checkbox" id="p-{{ key }}" name="{{ key }}" {% if prefill[key] %}checked{% endif %} style="justify-self:start">
+          {% elif typ.startswith("choice:") %}
+            <select id="p-{{ key }}" name="{{ key }}">
+              {% for opt in typ[7:].split(",") %}<option {% if prefill[key] == opt %}selected{% endif %}>{{ opt }}</option>{% endfor %}
+            </select>
+          {% else %}
+            {% if key in file_keys %}
+            <div style="display:flex;gap:6px">
+              <input type="text" id="p-{{ key }}" name="{{ key }}" value="{{ prefill[key] }}" data-ext="{{ file_keys[key] }}"
+                     list="{{ 'models' if file_keys[key] == '.pt' else 'homographies' }}" style="flex:1">
+              <button type="button" onclick="pickFile('p-{{ key }}')">瀏覽…</button>
+            </div>
+            {% else %}
+            <input type="text" id="p-{{ key }}" name="{{ key }}" value="{{ prefill[key] }}">
+            {% endif %}
+          {% endif %}
+          {% if help %}<div class="help">{{ help }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </fieldset>
+      {% endfor %}
+    </div>
+    <div class="hint">
+      參數掃描:數值欄位輸入多個值用逗號分隔,例如 信心門檻 <code>0.2,0.3,0.4</code>、確認幀數 <code>10,20</code>,
+      會自動建立所有組合 (3×2=6 個實驗 × 選取影片數),並歸在同一個批次方便比較。
+    </div>
+    <button class="primary" type="submit">建立並執行</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>實驗紀錄</h2>
+  <form method="get" id="exp-form">
+    <div class="btn-row" style="margin-bottom:10px">
+      <button type="submit" formaction="{{ url_for('compare') }}">比較選取</button>
+      <button type="submit" formaction="{{ url_for('export_compare') }}">匯出指標 CSV</button>
+      <button type="submit" formaction="{{ url_for('export_violations') }}">匯出違規 CSV</button>
+      <button type="submit" formaction="{{ url_for('export_tracks') }}">匯出車輛追蹤 CSV</button>
+      <button type="submit" class="danger" formaction="{{ url_for('delete_experiments') }}" formmethod="post"
+              onclick="return confirm('確定刪除選取的實驗?截圖和紀錄會一起刪除')">刪除選取</button>
+      <span class="muted small">不勾選直接匯出 = 全部實驗</span>
+    </div>
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" onclick="document.querySelectorAll('input[name=id]').forEach(c => c.checked = this.checked)"></th>
+        <th>#</th><th>名稱</th><th>影片</th><th>狀態</th>
+        {% for vt, vt_name in VIOLATION_TYPES.items() %}<th class="num">{{ vt_name }}</th>{% endfor %}
+        <th class="num">耗時(秒)</th><th>建立時間</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for e in experiments %}
+        {% set c = counts.get(e.id, {}) %}
+        <tr data-id="{{ e.id }}" data-status="{{ e.status }}">
+          <td><input type="checkbox" name="id" value="{{ e.id }}"></td>
+          <td><a href="{{ url_for('experiment_detail', exp_id=e.id) }}">{{ e.id }}</a></td>
+          <td>
+            <a href="{{ url_for('experiment_detail', exp_id=e.id) }}">{{ e.name }}</a>
+            {% if e.batch %}<div class="small"><a class="muted" href="{{ url_for('compare', batch=e.batch) }}">批次 {{ e.batch }}</a></div>{% endif %}
+          </td>
+          <td>{{ e.video }}</td>
+          <td class="status-cell">
+            <span class="status {{ e.status }}" title="{{ e.error or '' }}">{{ STATUS_TEXT.get(e.status, e.status) }}</span>
+            {% if e.status in ("running", "queued") %}<div class="progress"><div style="width:{{ ((e.progress or 0) * 100)|round(1) }}%"></div></div>{% endif %}
+          </td>
+          {% for vt in VIOLATION_TYPES %}<td class="num" data-count="{{ vt }}">{{ c.get(vt, 0) }}</td>{% endfor %}
+          <td class="num elapsed">{{ e.elapsed_sec if e.elapsed_sec is not none else "–" }}</td>
+          <td class="small muted">{{ e.created_at }}</td>
+          <td class="btn-row">
+            {% if e.status in ("running", "queued") %}
+              <button type="submit" formaction="{{ url_for('stop_experiment', exp_id=e.id) }}" formmethod="post">停止</button>
+            {% endif %}
+            <a class="btn" href="{{ url_for('index', **{'from': e.id}) }}" title="用這個實驗的參數當表單預設值">複製參數</a>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="12" class="muted">還沒有實驗,從上方建立第一個</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 開檔案總管選檔, 只能選欄位指定的副檔名 (模型 .pt / 標定矩陣 .json)
+async function pickFile(inputId) {
+  const input = document.getElementById(inputId);
+  const body = new URLSearchParams({current: input.value, ext: input.dataset.ext});
+  try {
+    const res = await fetch('/api/pick-file', {method: 'POST', body});
+    const data = await res.json();
+    if (data.path) { input.value = data.path; saveFile(input); }
+  } catch (err) { alert('無法開啟檔案選擇視窗'); }
+}
+// 路徑一改就存到伺服器, 刪除實驗或重新整理後不會跳回預設
+async function saveFile(input) {
+  try {
+    await fetch('/api/file-setting', {method: 'POST', body: new URLSearchParams({key: input.name, value: input.value})});
+  } catch (err) { /* 存不到就算了, 送出實驗時還會再存一次 */ }
+}
+document.querySelectorAll('input[data-ext]').forEach(i => i.addEventListener('change', () => saveFile(i)));
+// 有排隊/執行中的實驗時,每 2 秒更新狀態
+function activeIds() {
+  return [...document.querySelectorAll('tr[data-status=queued], tr[data-status=running]')].map(r => r.dataset.id);
+}
+async function poll() {
+  const ids = activeIds();
+  if (!ids.length) return;
+  try {
+    const res = await fetch('/api/experiments?ids=' + ids.join(','));
+    for (const e of await res.json()) {
+      const row = document.querySelector(`tr[data-id="${e.id}"]`);
+      if (!row) continue;
+      row.dataset.status = e.status;
+      const active = e.status === 'queued' || e.status === 'running';
+      row.querySelector('.status-cell').innerHTML =
+        `<span class="status ${e.status}" title="${e.error || ''}">${e.status_text}</span>` +
+        (active ? `<div class="progress"><div style="width:${(e.progress * 100).toFixed(1)}%"></div></div>` : '');
+      row.querySelectorAll('[data-count]').forEach(td => td.textContent = e.counts[td.dataset.count] || 0);
+      if (e.elapsed_sec != null) row.querySelector('.elapsed').textContent = e.elapsed_sec;
+      if (!active) row.querySelectorAll('button[formaction$="/stop"]').forEach(b => b.remove());
+    }
+  } catch (err) { /* 伺服器暫時沒回應,下次再試 */ }
+}
+setInterval(poll, 2000);
+</script>
+{% endblock %}

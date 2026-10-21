@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}相機標定{% endblock %}
+{% block content %}
+<style>
+  .calib-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+  @media (max-width: 1000px) { .calib-grid { grid-template-columns: minmax(0, 1fr); } }
+  .canvas-wrap { position: relative; background: #000; border-radius: 6px; overflow: hidden; min-height: 120px; }
+  .canvas-wrap canvas { display: block; width: 100%; height: auto; cursor: crosshair; }
+  .canvas-wrap .placeholder { color: #aaa; padding: 40px; text-align: center; }
+  .mode-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px;
+                background: var(--accent-soft); color: var(--accent); margin-left: 6px; }
+  .pts input[type=number] { width: 72px; }
+  .pts input[type=text] { width: 100%; min-width: 90px; }
+  .result-box { background: var(--accent-soft); border-radius: 6px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
+  .big-dist { font-size: 22px; font-weight: 700; }
+  tr.is-current td { background: var(--ok-soft); }
+</style>
+
+<section class="panel">
+  <h2>相機標定 <span class="mode-badge" id="mode-badge">1. 選參考圖</span></h2>
+  <p class="muted small">
+    跟 calibrate_camera.py 一樣:在路面照片上點已經量過真實距離的參考點 (至少 4 個),填入真實座標 (公尺) 算出矩陣,
+    再點兩點測距離檢查準確度。每次標定都會存成新檔,不會覆蓋舊的結果。
+  </p>
+  <div class="btn-row" style="margin-bottom:10px">
+    <label>影片 <select id="src-video">{% for v in videos %}<option>{{ v }}</option>{% endfor %}</select></label>
+    <label>第 <input type="number" id="src-t" value="0" min="0" step="0.5" style="width:80px"> 秒</label>
+    <button type="button" id="btn-frame">截取畫面</button>
+    <span class="muted">或</span>
+    <label class="btn">上傳照片<input type="file" id="src-file" accept="image/jpeg,image/png" hidden></label>
+  </div>
+
+  <div class="calib-grid">
+    <div>
+      <div class="canvas-wrap"><canvas id="cv" hidden></canvas><div class="placeholder" id="cv-empty">先截取影片畫面或上傳照片</div></div>
+      <div class="muted small" id="cv-hint" style="margin-top:6px"></div>
+    </div>
+
+    <div>
+      <!-- 標定模式 -->
+      <div id="calib-panel">
+        <h3 style="margin:0 0 6px">標定點</h3>
+        <p class="muted small" style="margin-top:0">依序在圖上點,第 N 次點擊對應第 N 列。真實座標單位是公尺。</p>
+        <div class="table-wrap">
+          <table class="pts">
+            <thead><tr><th>#</th><th>名稱</th><th>畫面 (px)</th><th>X (m)</th><th>Y (m)</th></tr></thead>
+            <tbody id="pts-body"></tbody>
+          </table>
+        </div>
+        <details style="margin:8px 0">
+          <summary class="small">矩形快速填入 (4 點剛好是一個矩形時用)</summary>
+          <p class="muted small" style="margin:4px 0">點選順序:1 = 原點、2 = 沿寬度方向、3 = 沿長度方向、4 = 對角。填入後仍可在上表修改。</p>
+          <div class="btn-row">
+            <label class="small">寬 (m) <input type="number" id="rect-w" step="0.01" min="0" style="width:80px"></label>
+            <label class="small">長 (m) <input type="number" id="rect-l" step="0.01" min="0" style="width:80px"></label>
+            <button type="button" id="btn-rect">填入座標</button>
+          </div>
+        </details>
+        <div class="btn-row" style="margin:8px 0">
+          <button type="button" id="btn-add-row">新增一列</button>
+          <button type="button" id="btn-undo">復原上一點</button>
+          <button type="button" id="btn-clear">清除所有點</button>
+        </div>
+        <label class="small">備註 <input type="text" id="calib-note" placeholder="例如:路口 A 白天" style="width:100%"></label>
+        <div style="margin-top:10px"><button type="button" class="primary" id="btn-compute">計算並儲存矩陣</button></div>
+        <div id="calib-error" class="flash error" hidden></div>
+      </div>
+
+      <!-- 測試模式 -->
+      <div id="test-panel" hidden>
+        <h3 style="margin:0 0 6px">測試距離</h3>
+        <div class="result-box" id="calib-summary"></div>
+        <p class="muted small">在圖上點兩個點,會算出換算後的真實距離。填入你實際量的距離後儲存,誤差會一起記下來。</p>
+        <div class="result-box">
+          <div>點 1: <span id="t-p1">–</span></div>
+          <div>點 2: <span id="t-p2">–</span></div>
+          <div>換算距離: <span class="big-dist" id="t-dist">–</span></div>
+        </div>
+        <label class="small">實際距離 (m) <input type="number" id="t-actual" step="0.01" min="0" style="width:100px"></label>
+        <label class="small">備註 <input type="text" id="t-note" style="width:100%"></label>
+        <div class="btn-row" style="margin-top:8px">
+          <button type="button" class="primary" id="btn-save-test" disabled>儲存這筆測試</button>
+          <button type="button" id="btn-reset-test">重點兩點</button>
+          <button type="button" id="btn-new-calib">重新標定 (另存新檔)</button>
+        </div>
+        <h4 style="margin:14px 0 4px">這次標定的測試紀錄</h4>
+        <div class="table-wrap"><table>
+          <thead><tr><th>時間</th><th class="num">換算</th><th class="num">實際</th><th class="num">誤差</th><th>備註</th></tr></thead>
+          <tbody id="tests-body"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>標定紀錄</h2>
+  <p class="muted small">綠底 = 目前建立實驗時預設使用的矩陣。「設為預設」後,建立實驗的「標定矩陣檔」就會帶入這個檔案。</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>檔案</th><th>建立時間</th><th>來源</th><th>備註</th><th class="num">點數</th><th class="num">回推誤差 RMS</th>
+      <th class="num">測試筆數</th><th class="num">平均測試誤差</th><th></th></tr></thead>
+    <tbody>
+    {% for c in calibrations %}
+      {% set errs = c.tests|selectattr("error_pct", "ne", none)|map(attribute="error_pct")|map("abs")|list %}
+      <tr class="{% if c.path|lower == current|lower %}is-current{% endif %}">
+        <td>{% if c.name %}<a href="{{ url_for('calibration_file', name=c.name, ext='json') }}" target="_blank">{{ c.name }}.json</a>{% else %}homography_matrix.json{% endif %}</td>
+        <td>{{ c.created_at or "–" }}</td><td>{{ c.source or "–" }}</td><td>{{ c.note or "" }}</td>
+        <td class="num">{{ c.points or "–" }}</td>
+        <td class="num">{{ "%.3f m"|format(c.rms_m) if c.rms_m is not none else "–" }}</td>
+        <td class="num">{{ c.tests|length }}</td>
+        <td class="num">{{ "%.1f%%"|format(errs|sum / errs|length) if errs else "–" }}</td>
+        <td class="btn-row" style="flex-wrap:nowrap">
+          {% if c.name and c.has_image %}<a class="btn" href="{{ url_for('calibration_page', open=c.name) }}">開啟測試</a>{% endif %}
+          <button type="button" data-default="{{ c.path }}">設為預設</button>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted">還沒有標定紀錄</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const OPEN_NAME = {{ open_name|tojson }};
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const img = new Image();
+let source = '', mode = 'empty';          // empty -> calib -> test
+let rows = [];                            // [{label, x, y, px, py}]
+let calib = null;                         // 存好的標定紀錄 (含 matrix)
+let testPts = [];
+
+function $(id) { return document.getElementById(id); }
+function setMode(m) {
+  mode = m;
+  $('calib-panel').hidden = m === 'test';
+  $('test-panel').hidden = m !== 'test';
+  $('mode-badge').textContent = {empty: '1. 選參考圖', calib: '2. 點標定點', test: '3. 測試距離'}[m];
+  $('cv-hint').textContent = m === 'calib' ? '依序點選標定點,點錯可按「復原上一點」'
+                          : m === 'test' ? '點兩個點測距離,再點會重新開始' : '';
+  draw();
+}
+
+// ---------- 參考圖 ----------
+function loadImage(src, label) {
+  return new Promise((resolve, reject) => {
+    img.onload = () => {
+      cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+      cv.hidden = false; $('cv-empty').hidden = true;
+      source = label; resolve();
+    };
+    img.onerror = () => reject(new Error('圖片載入失敗'));
+    img.src = src;
+  });
+}
+$('btn-frame').onclick = async () => {
+  const v = $('src-video').value, t = parseFloat($('src-t').value) || 0;
+  if (!v) return alert('test_videos/ 裡沒有影片');
+  try {
+    await loadImage(`/calibration/frame?video=${encodeURIComponent(v)}&t=${t}&_=${Date.now()}`, `${v} @ ${t}s`);
+    startCalib();
+  } catch (e) { alert('截取失敗,秒數可能超過影片長度'); }
+};
+$('src-file').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = async () => { await loadImage(reader.result, f.name); startCalib(); };
+  reader.readAsDataURL(f);
+};
+
+// ---------- 標定 ----------
+function startCalib() {
+  calib = null; testPts = [];
+  rows = Array.from({length: 4}, () => ({label: '', x: null, y: null, px: null, py: null}));
+  renderRows(); setMode('calib');
+}
+function renderRows() {
+  const body = $('pts-body');
+  body.replaceChildren();
+  rows.forEach((r, i) => {
+    const tr = body.insertRow();
+    tr.insertCell().textContent = i + 1;
+    const name = document.createElement('input'); name.type = 'text'; name.value = r.label;
+    name.oninput = () => r.label = name.value; tr.insertCell().appendChild(name);
+    tr.insertCell().textContent = r.px == null ? '–' : `${Math.round(r.px)}, ${Math.round(r.py)}`;
+    ['x', 'y'].forEach(k => {
+      const inp = document.createElement('input'); inp.type = 'number'; inp.step = '0.01';
+      inp.value = r[k] ?? ''; inp.oninput = () => r[k] = inp.value === '' ? null : parseFloat(inp.value);
+      tr.insertCell().appendChild(inp);
+    });
+  });
+}
+// 矩形快速填入: 依點選順序 1=原點、2=沿寬度、3=沿長度、4=對角
+$('btn-rect').onclick = () => {
+  const w = parseFloat($('rect-w').value), l = parseFloat($('rect-l').value);
+  if (!(w > 0) || !(l > 0)) return alert('請輸入寬度和長度 (公尺)');
+  while (rows.length < 4) rows.push({label: '', x: null, y: null, px: null, py: null});
+  [[0, 0], [w, 0], [0, l], [w, l]].forEach(([x, y], i) => { rows[i].x = x; rows[i].y = y; });
+  renderRows();
+};
+$('btn-add-row').onclick =() => { rows.push({label: '', x: null, y: null, px: null, py: null}); renderRows(); };
+$('btn-undo').onclick = () => {
+  const last = rows.map(r => r.px != null).lastIndexOf(true);
+  if (last >= 0) { rows[last].px = rows[last].py = null; renderRows(); draw(); }
+};
+$('btn-clear').onclick = () => { rows.forEach(r => r.px = r.py = null); renderRows(); draw(); };
+
+$('btn-compute').onclick = async () => {
+  const done = rows.filter(r => r.px != null);
+  const err = $('calib-error'); err.hidden = true;
+  const fail = msg => { err.textContent = msg; err.hidden = false; };
+  if (done.length < 4) return fail('至少要在圖上點 4 個點');
+  if (done.some(r => r.x == null || r.y == null || isNaN(r.x) || isNaN(r.y))) return fail('有點過的列沒有填真實座標 X / Y');
+  const body = {
+    image_points: done.map(r => [r.px, r.py]), world_points: done.map(r => [r.x, r.y]),
+    labels: done.map(r => r.label), source, note: $('calib-note').value,
+    image: imageDataUrl(), image_size: [cv.width, cv.height],
+  };
+  try {
+    const res = await fetch('/api/calibration', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const data = await res.json();
+    if (!res.ok) return fail(data.error || '計算失敗');
+    calib = data; startTest();
+  } catch (e) { fail('連不到伺服器'); }
+};
+// 存原圖 (不含畫上去的點)
+function imageDataUrl() {
+  const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext('2d').drawImage(img, 0, 0);
+  return c.toDataURL('image/jpeg', 0.92);
+}
+
+// ---------- 測試 ----------
+function toWorld(H, x, y) {
+  const w = H[2][0] * x + H[2][1] * y + H[2][2];
+  return [(H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w];
+}
+function startTest() {
+  testPts = [];
+  const s = $('calib-summary');
+  s.replaceChildren();
+  const lines = [`已存檔: ${calib.name}.json`, `標定點 ${calib.image_points.length} 個,回推誤差 RMS ${calib.rms_m.toFixed(3)} m`];
+  if (calib.source) lines.push(`來源: ${calib.source}`);
+  lines.forEach(t => { const d = document.createElement('div'); d.textContent = t; s.appendChild(d); });
+  renderTests(); updateTest(); setMode('test');
+}
+function updateTest() {
+  const fmtP = p => { if (!p) return '–'; const w = toWorld(calib.matrix, p[0], p[1]);
+    return `(${Math.round(p[0])}, ${Math.round(p[1])}) → (${w[0].toFixed(2)}, ${w[1].toFixed(2)}) m`; };
+  $('t-p1').textContent = fmtP(testPts[0]); $('t-p2').textContent = fmtP(testPts[1]);
+  $('t-dist').textContent = testPts.length === 2 ? testDistance().toFixed(2) + ' m' : '–';
+  $('btn-save-test').disabled = testPts.length !== 2;
+}
+function testDistance() {
+  const a = toWorld(calib.matrix, ...testPts[0]), b = toWorld(calib.matrix, ...testPts[1]);
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+function renderTests() {
+  const body = $('tests-body');
+  body.replaceChildren();
+  (calib.tests || []).slice().reverse().forEach(t => {
+    const tr = body.insertRow();
+    [t.created_at, t.distance_m.toFixed(2), t.actual_m == null ? '–' : t.actual_m.toFixed(2),
+     t.error_m == null ? '–' : `${t.error_m >= 0 ? '+' : ''}${t.error_m.toFixed(2)} m (${t.error_pct.toFixed(1)}%)`, t.note]
+      .forEach((v, i) => { const c = tr.insertCell(); c.textContent = v; if (i && i < 4) c.className = 'num'; });
+  });
+  if (!body.rows.length) { const c = body.insertRow().insertCell(); c.colSpan = 5; c.className = 'muted'; c.textContent = '還沒有測試'; }
+}
+$('btn-save-test').onclick = async () => {
+  const body = {p1: testPts[0], p2: testPts[1], distance_m: testDistance(), actual_m: $('t-actual').value, note: $('t-note').value};
+  const res = await fetch(`/api/calibration/${calib.name}/tests`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) return alert(data.error || '儲存失敗');
+  calib.tests = data.tests; renderTests();
+  testPts = []; $('t-actual').value = ''; $('t-note').value = ''; updateTest(); draw();
+};
+$('btn-reset-test').onclick = () => { testPts = []; updateTest(); draw(); };
+$('btn-new-calib').onclick = () => {
+  const keep = calib;
+  startCalib();
+  // 重新標定時沿用上一次的點位當起點, 存檔會是新檔
+  if (keep && keep.image_points) {
+    rows = keep.image_points.map((p, i) => ({label: (keep.point_labels || [])[i] || '', x: keep.world_points[i][0],
+                                             y: keep.world_points[i][1], px: p[0], py: p[1]}));
+    renderRows(); draw();
+  }
+};
+
+// ---------- 畫布 ----------
+cv.addEventListener('click', e => {
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * cv.width / r.width, y = (e.clientY - r.top) * cv.height / r.height;
+  if (mode === 'calib') {
+    let row = rows.find(r => r.px == null);
+    if (!row) { row = {label: '', x: null, y: null}; rows.push(row); }
+    row.px = x; row.py = y; renderRows();
+  } else if (mode === 'test') {
+    if (testPts.length === 2) testPts = [];
+    testPts.push([x, y]); updateTest();
+  }
+  draw();
+});
+function marker(x, y, color, text) {
+  const s = Math.max(1, cv.width / 900);
+  ctx.beginPath(); ctx.arc(x, y, 6 * s, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 2 * s; ctx.strokeStyle = '#fff'; ctx.stroke();
+  ctx.font = `bold ${16 * s}px sans-serif`; ctx.lineWidth = 4 * s; ctx.strokeStyle = '#000';
+  ctx.strokeText(text, x + 10 * s, y - 8 * s); ctx.fillStyle = '#fff'; ctx.fillText(text, x + 10 * s, y - 8 * s);
+}
+function draw() {
+  if (cv.hidden) return;
+  ctx.drawImage(img, 0, 0);
+  const s = Math.max(1, cv.width / 900);
+  const pts = mode === 'test' && calib ? calib.image_points.map((p, i) => ({px: p[0], py: p[1], n: i + 1}))
+                                       : rows.map((r, i) => ({px: r.px, py: r.py, n: i + 1})).filter(p => p.px != null);
+  pts.forEach(p => marker(p.px, p.py, mode === 'test' ? 'rgba(220,40,40,.55)' : '#e33', String(p.n)));
+  if (mode === 'test') {
+    if (testPts.length === 2) {
+      ctx.beginPath(); ctx.moveTo(...testPts[0]); ctx.lineTo(...testPts[1]);
+      ctx.strokeStyle = '#ffd400'; ctx.lineWidth = 3 * s; ctx.stroke();
+      const mx = (testPts[0][0] + testPts[1][0]) / 2, my = (testPts[0][1] + testPts[1][1]) / 2;
+      marker(mx, my, 'transparent', testDistance().toFixed(2) + ' m');
+    }
+    testPts.forEach((p, i) => marker(p[0], p[1], '#1e90ff', 'T' + (i + 1)));
+  }
+}
+
+// ---------- 標定紀錄 ----------
+document.querySelectorAll('[data-default]').forEach(b => b.onclick = async () => {
+  const res = await fetch('/api/calibration/default', {method: 'POST', body: new URLSearchParams({path: b.dataset.default})});
+  const data = res.ok ? await res.json() : {};
+  if (data.saved) location.href = '/calibration'; else alert('設定失敗');
+});
+if (OPEN_NAME) {
+  fetch(`/api/calibration/${encodeURIComponent(OPEN_NAME)}`).then(r => r.json()).then(async data => {
+    await loadImage(`/calibration/file/${data.name}.jpg`, data.source);
+    calib = data; startTest();
+  }).catch(() => alert('開啟標定紀錄失敗'));
+}
+</script>
+{% endblock %}

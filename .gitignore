@@ -1,0 +1,36 @@
+# 本機設定 / 密碼
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# 編輯器
+.vscode/
+.idea/
+
+# 模型權重 (檔案太大, 請另外下載)
+*.pt
+*.onnx
+weights/
+
+# 資料集、影片、訓練與實驗輸出
+AI city Challenge.v1i.yolov8/
+datasets/
+runs/
+data/
+test_videos/
+new_images/
+output_results/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# 舊版腳本
+legacy/
+
+# 文件、本機相機標定結果
+docs/
+configs/homography_matrix.json
