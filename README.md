@@ -24,8 +24,26 @@ helmet/
 ├── run.bat                 # Windows 一鍵啟動 (讀 .env → 啟動 PostgreSQL → 開網頁)
 ├── core/
 │   ├── config.py           # 專案路徑、讀取 .env
-│   ├── pipeline.py         # 偵測 / 追蹤 / 車牌 OCR / 測速核心
+│   ├── pipeline/           # 偵測 / 追蹤 / 車牌 OCR / 測速核心
+│   │   ├── params.py       #   所有可調整的參數
+│   │   ├── helmet.py       #   安全帽 / 機車偵測 + 追蹤
+│   │   ├── violations.py   #   違規類型、確認計數、違規車輛裁切
+│   │   ├── calibration.py  #   相機標定 (homography、測速區)
+│   │   ├── speed.py        #   測速
+│   │   ├── plate.py        #   車牌定位 + OCR
+│   │   ├── plate_format.py #   台灣車牌格式修正
+│   │   ├── video_output.py #   輸出標註影片、剪超速片段
+│   │   ├── gt_match.py     #   標註畫面 (img 真值) 比對
+│   │   └── processor.py    #   process_video(): 串起整個流程
 │   └── db.py               # PostgreSQL 資料表與存取
+├── web/                    # 網頁各頁面的路由
+│   ├── common.py           #   共用工具 (影片讀取、JSON 檔、CSV、選取實驗)
+│   ├── jobs.py             #   背景執行實驗
+│   ├── settings.py         #   模型 / 標定矩陣路徑設定、選檔視窗
+│   ├── experiments.py      #   建立 / 檢視 / 標註實驗
+│   ├── compare.py          #   比較實驗、CSV 匯出
+│   ├── videos.py           #   影片與真值、標註違規畫面
+│   └── calibration.py      #   相機標定
 ├── templates/              # 網頁 HTML 模板
 ├── static/                 # CSS
 ├── configs/
@@ -122,10 +140,20 @@ YOLO("yolov8s.pt").train(data="AI city Challenge.v1i.yolov8/data.yaml", epochs=3
 
 ## 資料庫
 
+依 ER Model v8 設計：
+
 | 資料表 | 內容 |
 |---|---|
-| `experiments` | 每一次實驗（一支影片搭配一組參數）的參數、狀態、計時 |
-| `violations` | 偵測到的違規和人工標註（`label`：tp / fp / dup，`plate_gt`：正確車牌） |
-| `tracks` | 每個 track id 的出現時間、幀數、平均與最高車速 |
-| `video_gt` | 每支影片實際的違規數（人工計數的真值），用來計算 recall |
+| `batch` | 批次（一次送出多個實驗） |
+| `model` | 安全帽模型版本（權重路徑） |
+| `video` | 影片檔名與 fps |
+| `type` | 違規類型（`no_helmet` / `illegal_motorcycle_entry` / `speeding`） |
+| `run` | 每一次實驗（一支影片搭配一組參數）的參數、狀態、計時，屬於 video / model / batch |
+| `track` | run 裡每台車的出現時間、幀數、平均與最高車速（`tid` 每個 run 從 1 開始，`(run_id, tid)` 唯一） |
+| `record` | 偵測到的違規，掛在 track 底下，和人工標註（`gt_label`：tp / fp / dup，`gt_plate`：正確車牌） |
+| `vt` | 每支影片每種違規的實際數量（人工計數的真值），用來計算 recall |
+| `img` | 從影片切出的單人裁切圖與人工真值 `gt_ans` |
+| `ri` | run 對 img 的預測；用複合外鍵確保 run 和 img 屬於同一支影片 |
+
+舊版的 `experiments` / `violations` / `tracks` / `video_gt` 資料表還在的話，啟動時會自動把資料搬進新表（舊表保留不刪，實驗編號不變）。
 

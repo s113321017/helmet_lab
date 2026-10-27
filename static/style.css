@@ -47,6 +47,8 @@ legend { color: var(--muted); padding: 0 4px; }
 .field { display: grid; grid-template-columns: 130px 1fr; gap: 8px; align-items: center; margin-top: 6px; }
 .field label { font-size: 13px; }
 .field .help { grid-column: 2; font-size: 11px; color: var(--muted); margin-top: -4px; }
+.field .add-file { grid-column: 2; grid-row: 3; justify-self: start; }   /* 放在說明文字下面, 不要擠到標籤那一欄 */
+.file-rows { display: flex; flex-direction: column; gap: 4px; }
 .video-picks { display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 6px 0 12px; }
 .video-pick { display: flex; flex-direction: column; gap: 4px; width: 200px; cursor: pointer; }
 .video-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -79,7 +81,24 @@ tr:hover td { background: var(--bg); }
 /* 違規標註 */
 .thumb { height: 64px; border-radius: 4px; border: 1px solid var(--border); display: block; }
 .thumb.plate { height: 36px; margin-top: 4px; }
-.label-btns button { padding: 2px 8px; font-size: 12px; }
+.label-btns { display: flex; gap: 4px; flex-wrap: nowrap; }
+.label-btns button { padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+video.clip { display: block; width: 200px; margin-top: 4px; border-radius: 4px; background: #000; }
+
+/* 標註違規畫面 (影片與真值) */
+.gt-layout { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.gt-stage { position: relative; flex: 1 1 640px; max-width: 1100px; }
+.gt-stage video { display: block; width: 100%; background: #000; border-radius: 6px; }
+.gt-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+.gt-side { display: flex; flex-direction: column; gap: 8px; width: 200px; }
+.gt-time { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gt-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.gt-item { display: flex; gap: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 6px; width: 290px; }
+.gt-item img { width: 120px; height: 90px; object-fit: contain; background: #000; border-radius: 4px; }
+.gt-status { white-space: nowrap; }
+.gt-status.hit { color: var(--ok); }
+.gt-status.detected { color: var(--warn); }
+.gt-status.missed { color: var(--bad); }
 .label-btns button.on[data-label=tp] { background: var(--ok); border-color: var(--ok); color: #fff; }
 .label-btns button.on[data-label=fp] { background: var(--bad); border-color: var(--bad); color: #fff; }
 .label-btns button.on[data-label=dup] { background: var(--warn); border-color: var(--warn); color: #fff; }

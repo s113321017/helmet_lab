@@ -69,6 +69,7 @@
         {% for k in diff_keys %}<th rowspan="2" class="changed">{{ k }}</th>{% endfor %}
         {% for vt, vt_name in VIOLATION_TYPES.items() %}<th colspan="4" style="text-align:center">{{ vt_name }}</th>{% endfor %}
         <th colspan="2" style="text-align:center">車牌</th>
+        <th rowspan="2" class="num">標註畫面<br>抓到率</th>
         <th rowspan="2" class="num">ms/幀</th>
       </tr>
       <tr>
@@ -88,6 +89,7 @@
           <td class="num">{{ t.precision|pct }}</td><td class="num">{{ t.recall|pct }}</td>
         {% endfor %}
         <td class="num">{{ m.plate.fixed_acc|pct }}</td><td class="num">{{ m.plate.char_acc|pct }}</td>
+        <td class="num" title="{{ m.img.hit }} / {{ m.img.judged }}">{{ m.img.hit_rate|pct }}</td>
         <td class="num">{{ e.avg_ms_per_frame|fmt }}</td>
       </tr>
     {% endfor %}

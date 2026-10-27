@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 {% block title %}#{{ exp.id }} {{ exp.name }}{% endblock %}
 {% block content %}
-<section class="panel">
+<section class="panel" id="live-head" data-live>
   <div class="btn-row" style="justify-content:space-between">
     <div>
       <h1>#{{ exp.id }} {{ exp.name }}</h1>
       <div class="muted">
         {{ exp.video }} ·
         <span class="status {{ exp.status }}">{{ STATUS_TEXT.get(exp.status, exp.status) }}</span>
-        {% if exp.status in ("running", "queued") %}{{ ((exp.progress or 0) * 100)|round(1) }}%{% endif %}
+        {% if exp.status in ("running", "queued") %}<span id="exp-progress">{{ ((exp.progress or 0) * 100)|round(1) }}%</span>{% endif %}
         · 建立 {{ exp.created_at }}{% if exp.finished_at %} · 結束 {{ exp.finished_at }}{% endif %}
         {% if exp.batch %} · <a href="{{ url_for('compare', batch=exp.batch) }}">批次 {{ exp.batch }}</a>{% endif %}
       </div>
@@ -31,7 +31,7 @@
   </div>
 </section>
 
-<section class="panel">
+<section class="panel" id="live-metrics" data-live>
   <h2>指標 <span class="muted small">(依下方人工標註即時計算;recall 需要在「影片與真值」填實際違規數)</span></h2>
   <div class="table-wrap">
   <table>
@@ -58,7 +58,7 @@
   </div>
 </section>
 
-<section class="panel">
+<section class="panel" id="live-violations" data-live>
   <div class="btn-row" style="justify-content:space-between; margin-bottom:10px">
     <h2 style="margin:0">違規紀錄 ({{ violations|length }})</h2>
     <div class="btn-row">
@@ -80,6 +80,8 @@
         <td>
           <a href="{{ url_for('experiment_file', exp_id=exp.id, filename=v.vehicle_img) }}" target="_blank"><img class="thumb" loading="lazy" src="{{ url_for('experiment_file', exp_id=exp.id, filename=v.vehicle_img) }}"></a>
           <a href="{{ url_for('experiment_file', exp_id=exp.id, filename=v.plate_img) }}" target="_blank"><img class="thumb plate" loading="lazy" src="{{ url_for('experiment_file', exp_id=exp.id, filename=v.plate_img) }}"></a>
+          {% if v.clip_path %}<video class="clip" controls muted preload="metadata"
+            src="{{ url_for('experiment_file', exp_id=exp.id, filename=v.clip_path) }}"></video>{% endif %}
         </td>
         <td>{{ VIOLATION_TYPES.get(v.violation_type, v.violation_type) }}</td>
         <td class="num">{{ v.time_sec }}</td>
@@ -90,9 +92,9 @@
         <td class="num">{{ v.plate_conf|fmt }}</td>
         <td class="small">{{ v.status_text }}</td>
         <td class="num">{{ v.speed_kmh|fmt }}</td>
-        <td class="label-btns btn-row">
+        <td><div class="label-btns">
           {% for k, n in LABELS.items() %}<button type="button" data-label="{{ k }}" class="{% if v.label == k %}on{% endif %}">{{ n }}</button>{% endfor %}
-        </td>
+        </div></td>
         <td><div class="plate-gt">
           <input type="text" class="gt-input" value="{{ v.plate_gt or '' }}" placeholder="ABC-1234">
           <button type="button" class="gt-same" title="OCR 修正後的車牌是對的">✓</button>
@@ -108,6 +110,41 @@
   <div class="small muted" style="margin-top:8px">
     正確 = 真的違規 · 誤報 = 不是違規 (或偵測錯人/車) · 重複 = 同一台車被追蹤斷掉又算一次。Precision = 正確 / (正確+誤報+重複)
   </div>
+</section>
+
+<section class="panel" id="live-gt" data-live>
+  {% set im = metrics.img %}
+  <h2>標註畫面比對 <span class="muted small">(在「影片與真值」框出的違規,這次實驗在那個時間、位置偵測到什麼)</span></h2>
+  {% if predictions %}
+  <div class="metric-grid" style="margin-bottom:12px">
+    <div class="metric"><div class="v">{{ im.hit_rate|pct }}</div><div class="k">抓到率 ({{ im.hit }} / {{ im.judged }})</div></div>
+    <div class="metric"><div class="v">{{ im.detected }}</div><div class="k">有偵測但沒判違規 (漏報)</div></div>
+    <div class="metric"><div class="v">{{ im.missed }}</div><div class="k">沒偵測到 (漏報)</div></div>
+    {% if im.skipped or im.pending %}<div class="metric"><div class="v">{{ im.skipped + im.pending }}</div>
+      <div class="k">不計 (沒跑到 {{ im.skipped }} / 實驗後才標註 {{ im.pending }})</div></div>{% endif %}
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>標註畫面</th><th>違規類型</th><th class="num">時間(秒)</th><th>結果</th><th>偵測到的類別</th>
+      <th class="num">信心</th><th class="num">Track</th><th class="num">IoU</th></tr></thead>
+    <tbody>
+    {% for p in predictions %}{% set r = p.pred or {} %}
+      <tr>
+        <td><a href="{{ url_for('gt_img_file', iid=p.iid) }}" target="_blank"><img class="thumb" loading="lazy" src="{{ url_for('gt_img_file', iid=p.iid) }}"></a></td>
+        <td>{{ VIOLATION_TYPES.get(p.gt_ans, p.gt_ans) }}</td>
+        <td class="num">{{ p.time_sec }}</td>
+        <td class="gt-status {{ r.status }}">{{ {"hit": "✅ 抓到", "detected": "🟡 有偵測沒判違規", "missed": "❌ 沒偵測到",
+                                               "skipped": "– 沒跑到這段"}.get(r.status, "– 實驗後才標註") }}</td>
+        <td>{{ r.get("class", "") }}</td><td class="num">{{ r.get("conf")|fmt }}</td>
+        <td class="num">{{ r.get("tid", "") }}</td><td class="num">{{ r.get("iou")|fmt }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <div class="muted">這支影片還沒有標註畫面,到「影片與真值」點影片框出違規畫面。</div>
+  {% endif %}
 </section>
 
 <div class="two-col">
@@ -136,7 +173,7 @@
   </section>
 </div>
 
-<section class="panel">
+<section class="panel" id="live-tracks" data-live>
   <details>
     <summary>車輛追蹤統計 ({{ tracks|length }} 個 track)</summary>
     <div class="table-wrap" style="margin-top:10px">
@@ -155,7 +192,7 @@
   </details>
 </section>
 
-<section class="panel">
+<section class="panel" id="live-log" data-live>
   <details {% if exp.status == "failed" %}open{% endif %}>
     <summary>執行紀錄 (log)</summary>
     <pre class="log">{{ log_text or "(沒有紀錄)" }}</pre>
@@ -170,7 +207,8 @@ const norm = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 async function save(vid, data) {
   const res = await fetch(`/api/violations/${vid}`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
-  if (!res.ok) alert('儲存失敗');
+  if (!res.ok) return alert('儲存失敗');
+  refreshSections(['live-metrics']);   // 標註一改, 上面的 Precision / Recall / 車牌準確率馬上重算
 }
 
 function markPlate(row) {
@@ -180,7 +218,7 @@ function markPlate(row) {
   box.classList.toggle('mismatch', !!gt && gt !== norm(row.dataset.fixed));
 }
 
-document.querySelectorAll('#vio-table tr[data-vid]').forEach(row => {
+function bindRow(row) {
   const vid = row.dataset.vid;
   markPlate(row);
 
@@ -207,7 +245,7 @@ document.querySelectorAll('#vio-table tr[data-vid]').forEach(row => {
 
   const noteInput = row.querySelector('.note-input');
   noteInput.addEventListener('change', () => save(vid, {note: noteInput.value}));
-});
+}
 
 function applyFilter() {
   const t = document.getElementById('f-type').value, l = document.getElementById('f-label').value;
@@ -215,20 +253,63 @@ function applyFilter() {
     row.style.display = (!t || row.dataset.type === t) && (!l || row.dataset.label === l) ? '' : 'none';
   });
 }
-document.getElementById('f-type').addEventListener('change', applyFilter);
-document.getElementById('f-label').addEventListener('change', applyFilter);
 
-// 執行中:有新違規或狀態改變就重新整理頁面
+function bindPage() {
+  document.querySelectorAll('#vio-table tr[data-vid]').forEach(bindRow);
+  document.getElementById('f-type').addEventListener('change', applyFilter);
+  document.getElementById('f-label').addEventListener('change', applyFilter);
+}
+bindPage();
+
+// 在背景重抓頁面, 把指定的 data-live 區塊換成最新的 (不整頁重新整理: 捲動位置、篩選條件、展開的區塊都保留)
+// ids 沒給 = 全部區塊
+async function refreshSections(ids) {
+  try {
+    const html = await (await fetch(location.pathname)).text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const filters = {type: document.getElementById('f-type').value, label: document.getElementById('f-label').value};
+    const olds = [...document.querySelectorAll('[data-live]')].filter(s => !ids || ids.includes(s.id));
+    olds.forEach(old => {
+      const fresh = doc.getElementById(old.id);
+      if (!fresh) return;
+      const opened = [...old.querySelectorAll('details')].map(d => d.open);
+      fresh.querySelectorAll('details').forEach((d, i) => { if (i < opened.length) d.open = opened[i]; });
+      old.replaceWith(fresh);
+    });
+    if (olds.some(s => s.id === 'live-violations')) {   // 違規表格換新了, 重新綁定按鈕和篩選
+      document.getElementById('f-type').value = filters.type;
+      document.getElementById('f-label').value = filters.label;
+      bindPage();
+      applyFilter();
+    }
+  } catch (err) { /* 抓不到就算了, 重新整理也看得到 */ }
+}
+
+// 執行中: 每 2 秒更新進度; 有新違規或狀態改變時把全部區塊換新 (正在輸入時先不換, 等輸入完)
 {% if exp.status in ("running", "queued") %}
-let last = null;
-setInterval(async () => {
+let lastKey = {{ (exp.status ~ "|" ~ violations|length)|tojson }};
+let pending = false;
+
+function typing() {
+  const a = document.activeElement;
+  return a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) && a.closest('[data-live]');
+}
+
+const timer = setInterval(async () => {
   try {
     const [e] = await (await fetch('/api/experiments?ids={{ exp.id }}')).json();
-    const key = e.status + JSON.stringify(e.counts);
-    if (last !== null && key !== last) location.reload();
-    last = key;
-  } catch (err) {}
-}, 3000);
+    const progress = document.getElementById('exp-progress');
+    if (progress) progress.textContent = ((e.progress || 0) * 100).toFixed(1) + '%';
+    const total = Object.values(e.counts).reduce((a, b) => a + b, 0);
+    const key = `${e.status}|${total}`;
+    if (key !== lastKey) { lastKey = key; pending = true; }
+    if (pending && !typing()) {
+      await refreshSections();
+      pending = false;
+      if (e.status !== 'queued' && e.status !== 'running') clearInterval(timer);   // 跑完了, 停止更新
+    }
+  } catch (err) { /* 伺服器暫時沒回應, 下次再試 */ }
+}, 2000);
 {% endif %}
 </script>
 {% endblock %}

@@ -9,22 +9,49 @@
   </form>
 </section>
 
+<section class="panel" id="gt-panel" hidden>
+  <h2>標註違規畫面 <span class="muted" id="gt-video-name"></span></h2>
+  <p class="muted small">
+    點影片播放、再點一次暫停 (也可以按空白鍵);暫停後在畫面上拖曳框出違規的人或車,選違規類型後按「擷取畫面」。
+    ← → 一次移動一幀。實驗執行時會比對這個時間、這個位置偵測到什麼,沒抓到就算漏報。
+  </p>
+  <div class="gt-layout">
+    <div class="gt-stage">
+      <video id="gt-video" playsinline muted preload="auto"></video>
+      <canvas id="gt-canvas"></canvas>
+    </div>
+    <div class="gt-side">
+      <div class="gt-time" id="gt-time">0.00 秒</div>
+      <label for="gt-type" class="small muted">違規類型</label>
+      <select id="gt-type">
+        {% for vt, vt_name in VIOLATION_TYPES.items() %}<option value="{{ vt }}">{{ vt_name }}</option>{% endfor %}
+      </select>
+      <button type="button" class="primary" id="gt-capture">📸 擷取畫面</button>
+      <button type="button" id="gt-clear">清除框</button>
+      <div class="small" id="gt-msg"></div>
+    </div>
+  </div>
+  <input type="range" id="gt-seek" min="0" step="0.01" value="0" style="width:100%; margin-top:8px">
+  <h3 style="margin-top:14px">已標註 (<span id="gt-count">0</span>)</h3>
+  <div class="gt-list" id="gt-list"></div>
+</section>
+
 <section class="panel">
   <h2>影片與真值</h2>
   <p class="muted small">
     自己看影片數出每種違規實際有幾台車,填進來後實驗就能算 Recall (抓到的正確違規 / 實際違規數)。
-    不適用的類型留空 (例如這支影片不是禁行路段)。
+    不適用的類型留空 (例如這支影片不是禁行路段)。點預覽或「標註畫面」可以逐一框出違規的畫面。
   </p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>預覽</th><th>影片</th><th>解析度</th><th class="num">FPS</th><th class="num">長度(秒)</th><th class="num">總幀數</th>
-      {% for vt, vt_name in VIOLATION_TYPES.items() %}<th>實際{{ vt_name }}</th>{% endfor %}<th></th></tr></thead>
+      {% for vt, vt_name in VIOLATION_TYPES.items() %}<th>實際{{ vt_name }}</th>{% endfor %}<th></th><th>標註畫面</th></tr></thead>
     <tbody>
     {% for v in videos %}
       {% set fid = "gt-" ~ loop.index0 %}
       <tr>
-        <td><video class="hover-preview" muted playsinline preload="metadata"
-                   src="{{ url_for('video_file', filename=v.name) }}#t=0.1"></video></td>
+        <td><video class="hover-preview gt-open" muted playsinline preload="metadata" data-video="{{ v.name }}" data-fps="{{ v.fps }}"
+                   src="{{ url_for('video_file', filename=v.name) }}#t=0.1" style="cursor:pointer"></video></td>
         <td>{{ v.name }}</td><td>{{ v.size }}</td><td class="num">{{ v.fps }}</td>
         <td class="num">{{ v.duration|fmt }}</td><td class="num">{{ v.frames }}</td>
         {% for vt in VIOLATION_TYPES %}
@@ -35,12 +62,157 @@
             <input type="hidden" name="video" value="{{ v.name }}"><button>儲存</button>
           </form>
         </td>
+        <td><button type="button" class="gt-open" data-video="{{ v.name }}" data-fps="{{ v.fps }}">
+          標註畫面 (<span class="gt-n">{{ v.imgs }}</span>)</button></td>
       </tr>
     {% else %}
-      <tr><td colspan="10" class="muted">test_videos/ 裡沒有影片</td></tr>
+      <tr><td colspan="11" class="muted">test_videos/ 裡沒有影片</td></tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TYPES = {{ VIOLATION_TYPES|tojson }};
+const panel = document.getElementById('gt-panel');
+const video = document.getElementById('gt-video');
+const canvas = document.getElementById('gt-canvas');
+const ctx = canvas.getContext('2d');
+const seek = document.getElementById('gt-seek');
+const msgEl = document.getElementById('gt-msg');
+let current = null, fps = 30, box = null, drag = null, items = [];   // box: 原始影片像素座標 [x1, y1, x2, y2]
+
+function msg(text, ok) { msgEl.textContent = text; msgEl.style.color = ok ? 'var(--ok)' : 'var(--bad)'; }
+const scale = () => video.videoWidth / canvas.width;              // 畫面座標 → 原始影片座標
+const frameTime = frameIdx => (frameIdx - 0.5) / fps;             // frame_idx 從 1 開始, 取那一幀的中間時間
+
+function openGt(name, videoFps) {
+  current = name;
+  fps = videoFps || 30;
+  box = null;
+  video.src = '/videos/file/' + encodeURIComponent(name);
+  document.getElementById('gt-video-name').textContent = name;
+  panel.hidden = false;
+  msg('');
+  loadList();
+  panel.scrollIntoView({behavior: 'smooth'});
+}
+document.querySelectorAll('.gt-open').forEach(el =>
+  el.addEventListener('click', () => openGt(el.dataset.video, parseFloat(el.dataset.fps))));
+
+function resizeCanvas() {
+  canvas.width = video.clientWidth;
+  canvas.height = video.clientHeight;
+  draw();
+}
+video.addEventListener('loadedmetadata', () => { seek.max = video.duration; resizeCanvas(); });
+window.addEventListener('resize', resizeCanvas);
+
+function strokeBox(b, color, dashed) {
+  const s = scale();
+  ctx.setLineDash(dashed ? [6, 4] : []);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(b[0] / s, b[1] / s, (b[2] - b[0]) / s, (b[3] - b[1]) / s);
+}
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!video.videoWidth) return;
+  // 這一幀已經標註過的框 (綠色虛線)
+  items.filter(i => Math.abs(frameTime(i.frame_idx) - video.currentTime) < 0.6 / fps)
+       .forEach(i => strokeBox(i.bbox, '#22c55e', true));
+  if (box) strokeBox(box, '#ef4444', false);
+}
+video.addEventListener('timeupdate', () => {
+  document.getElementById('gt-time').textContent = video.currentTime.toFixed(2) + ' 秒';
+  seek.value = video.currentTime;
+  draw();
+});
+video.addEventListener('seeked', draw);
+video.addEventListener('play', () => { box = null; draw(); });
+seek.addEventListener('input', () => { video.pause(); video.currentTime = parseFloat(seek.value); });
+
+function togglePlay() { video.paused ? video.play() : video.pause(); }
+
+// 點一下 = 播放 / 暫停; 暫停時拖曳 = 框出違規
+canvas.addEventListener('pointerdown', e => {
+  drag = {x: e.offsetX, y: e.offsetY, moved: false};
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!drag || !video.paused) return;
+  if (Math.abs(e.offsetX - drag.x) + Math.abs(e.offsetY - drag.y) > 5) drag.moved = true;
+  if (drag.moved) {
+    const s = scale();
+    box = [Math.min(drag.x, e.offsetX) * s, Math.min(drag.y, e.offsetY) * s,
+           Math.max(drag.x, e.offsetX) * s, Math.max(drag.y, e.offsetY) * s];
+    draw();
+  }
+});
+canvas.addEventListener('pointerup', () => {
+  if (drag && !drag.moved) togglePlay();
+  drag = null;
+});
+
+document.addEventListener('keydown', e => {
+  if (panel.hidden || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+    e.preventDefault();
+    video.pause();
+    video.currentTime = Math.max(0, video.currentTime + (e.code === 'ArrowRight' ? 1 : -1) / fps);
+  }
+});
+
+document.getElementById('gt-clear').addEventListener('click', () => { box = null; draw(); });
+document.getElementById('gt-capture').addEventListener('click', async () => {
+  video.pause();
+  if (!box) { msg('先在畫面上拖曳框出違規的人或車'); return; }
+  const type = document.getElementById('gt-type').value;
+  try {
+    const res = await fetch('/api/gt-imgs', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({video: current, time: video.currentTime, bbox: box, gt_ans: type})});
+    const data = await res.json();
+    if (!res.ok) { msg(data.error || '儲存失敗'); return; }
+    box = null;
+    msg(`已儲存: ${TYPES[type]} @ ${data.time_sec} 秒`, true);
+    loadList();
+  } catch (err) { msg('儲存失敗, 伺服器沒有回應'); }
+});
+
+async function loadList() {
+  const name = current;
+  const res = await fetch('/api/gt-imgs?video=' + encodeURIComponent(name));
+  if (name !== current) return;   // 載入期間換了影片
+  items = await res.json();
+  document.getElementById('gt-count').textContent = items.length;
+  document.querySelectorAll('button.gt-open').forEach(b => {
+    if (b.dataset.video === name) b.querySelector('.gt-n').textContent = items.length;
+  });
+  const list = document.getElementById('gt-list');
+  list.innerHTML = '';
+  for (const i of items) {
+    const div = document.createElement('div');
+    div.className = 'gt-item';
+    div.innerHTML = `<img loading="lazy" src="/gt-imgs/${i.iid}.jpg">
+      <div><b></b><div class="small muted">${i.time_sec} 秒 · 第 ${i.frame_idx} 幀</div>
+        <div class="btn-row" style="margin-top:6px"><button type="button" class="small">跳到</button>
+          <button type="button" class="small danger">刪除</button></div></div>`;
+    div.querySelector('b').textContent = TYPES[i.gt_ans] || i.gt_ans;
+    const [goBtn, delBtn] = div.querySelectorAll('button');
+    goBtn.onclick = () => { video.pause(); box = null; video.currentTime = frameTime(i.frame_idx); };
+    delBtn.onclick = async () => {
+      if (!confirm('刪除這張標註畫面? (實驗的比對結果也會一起刪除)')) return;
+      await fetch(`/api/gt-imgs/${i.iid}/delete`, {method: 'POST'});
+      loadList();
+    };
+    list.appendChild(div);
+  }
+  draw();
+}
+</script>
 {% endblock %}

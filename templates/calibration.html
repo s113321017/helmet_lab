@@ -93,7 +93,7 @@
   </div>
 </section>
 
-<section class="panel">
+<section class="panel" id="calib-records">
   <h2>標定紀錄</h2>
   <p class="muted small">綠底 = 目前建立實驗時預設使用的矩陣。「設為預設」後,建立實驗的「標定矩陣檔」就會帶入這個檔案。</p>
   <div class="table-wrap">
@@ -226,6 +226,7 @@ $('btn-compute').onclick = async () => {
     const data = await res.json();
     if (!res.ok) return fail(data.error || '計算失敗');
     calib = data; startTest();
+    refreshRecords();
   } catch (e) { fail('連不到伺服器'); }
 };
 // 存原圖 (不含畫上去的點)
@@ -278,6 +279,7 @@ $('btn-save-test').onclick = async () => {
   if (!res.ok) return alert(data.error || '儲存失敗');
   calib.tests = data.tests; renderTests();
   testPts = []; $('t-actual').value = ''; $('t-note').value = ''; updateTest(); draw();
+  refreshRecords();
 };
 $('btn-reset-test').onclick = () => { testPts = []; updateTest(); draw(); };
 $('btn-new-calib').onclick = () => {
@@ -331,11 +333,23 @@ function draw() {
 }
 
 // ---------- 標定紀錄 ----------
-document.querySelectorAll('[data-default]').forEach(b => b.onclick = async () => {
-  const res = await fetch('/api/calibration/default', {method: 'POST', body: new URLSearchParams({path: b.dataset.default})});
-  const data = res.ok ? await res.json() : {};
-  if (data.saved) location.href = '/calibration'; else alert('設定失敗');
-});
+function bindDefaultButtons() {
+  document.querySelectorAll('[data-default]').forEach(b => b.onclick = async () => {
+    const res = await fetch('/api/calibration/default', {method: 'POST', body: new URLSearchParams({path: b.dataset.default})});
+    const data = res.ok ? await res.json() : {};
+    if (data.saved) refreshRecords(); else alert('設定失敗');
+  });
+}
+bindDefaultButtons();
+// 存好矩陣 / 測試後, 在背景重抓下方的標定紀錄換上去 (不整頁重新整理, 測試中的狀態不會不見)
+async function refreshRecords() {
+  if (calib) history.replaceState(null, '', '/calibration?open=' + encodeURIComponent(calib.name));
+  try {
+    const html = await (await fetch('/calibration')).text();
+    const fresh = new DOMParser().parseFromString(html, 'text/html').getElementById('calib-records');
+    if (fresh) { $('calib-records').replaceWith(fresh); bindDefaultButtons(); }
+  } catch (e) { /* 抓不到就算了, 手動重新整理也看得到 */ }
+}
 if (OPEN_NAME) {
   fetch(`/api/calibration/${encodeURIComponent(OPEN_NAME)}`).then(r => r.json()).then(async data => {
     await loadImage(`/calibration/file/${data.name}.jpg`, data.source);

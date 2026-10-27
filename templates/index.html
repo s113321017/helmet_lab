@@ -7,6 +7,11 @@
       <label for="name">實驗名稱</label>
       <input type="text" id="name" name="name" placeholder="留空自動用時間命名">
     </div>
+    <div class="field" style="grid-template-columns: 130px minmax(0, 420px)">
+      <label for="batch">批次名稱</label>
+      <input type="text" id="batch" name="batch" placeholder="留空自動用日期時間, 例如 2026-10-27 14:30">
+      <div class="help">同一個批次名稱的實驗會放在一起比較; 填已經有的名稱就會加進那個批次</div>
+    </div>
 
     <div style="margin-top:12px">影片 <span class="muted small">(可複選,每支影片各建一個實驗;影片放在 test_videos/ 或到「影片與真值」上傳)</span></div>
     <div class="video-picks">
@@ -38,11 +43,16 @@
             </select>
           {% else %}
             {% if key in file_keys %}
-            <div style="display:flex;gap:6px">
-              <input type="text" id="p-{{ key }}" name="{{ key }}" value="{{ prefill[key] }}" data-ext="{{ file_keys[key] }}"
-                     list="{{ 'models' if file_keys[key] == '.pt' else 'homographies' }}" style="flex:1">
-              <button type="button" onclick="pickFile('p-{{ key }}')">瀏覽…</button>
+            <div class="file-rows">
+              <div class="file-row" style="display:flex;gap:6px">
+                <input type="text" id="p-{{ key }}" name="{{ key }}" value="{{ prefill[key] }}" data-ext="{{ file_keys[key] }}"
+                       list="{{ 'models' if file_keys[key] == '.pt' else 'homographies' }}" style="flex:1">
+                <button type="button" onclick="pickFile(this)">瀏覽…</button>
+              </div>
             </div>
+            {% if key in multi_keys %}
+            <button type="button" class="small add-file" onclick="addFileRow(this)">＋ 加入另一個安全帽模型</button>
+            {% endif %}
             {% else %}
             <input type="text" id="p-{{ key }}" name="{{ key }}" value="{{ prefill[key] }}">
             {% endif %}
@@ -56,6 +66,7 @@
     <div class="hint">
       參數掃描:數值欄位輸入多個值用逗號分隔,例如 信心門檻 <code>0.2,0.3,0.4</code>、確認幀數 <code>10,20</code>,
       會自動建立所有組合 (3×2=6 個實驗 × 選取影片數),並歸在同一個批次方便比較。
+      安全帽模型按「＋ 加入另一個安全帽模型」可以選多個,每個模型也會跟其他參數組合各跑一次。
     </div>
     <button class="primary" type="submit">建立並執行</button>
   </form>
@@ -119,8 +130,8 @@
 {% block scripts %}
 <script>
 // 開檔案總管選檔, 只能選欄位指定的副檔名 (模型 .pt / 標定矩陣 .json)
-async function pickFile(inputId) {
-  const input = document.getElementById(inputId);
+async function pickFile(btn) {
+  const input = btn.parentElement.querySelector('input');
   const body = new URLSearchParams({current: input.value, ext: input.dataset.ext});
   try {
     const res = await fetch('/api/pick-file', {method: 'POST', body});
@@ -128,8 +139,26 @@ async function pickFile(inputId) {
     if (data.path) { input.value = data.path; saveFile(input); }
   } catch (err) { alert('無法開啟檔案選擇視窗'); }
 }
-// 路徑一改就存到伺服器, 刪除實驗或重新整理後不會跳回預設
+// 多加一列模型路徑 (同一個欄位名稱送出多個值 → 每個模型各建一個實驗)
+function addFileRow(btn) {
+  const rows = btn.parentElement.querySelector('.file-rows');
+  const row = rows.firstElementChild.cloneNode(true);
+  const input = row.querySelector('input');
+  input.removeAttribute('id');
+  input.value = '';
+  input.dataset.extra = '1';
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.textContent = '✕';
+  remove.title = '移除這個模型';
+  remove.onclick = () => row.remove();
+  row.appendChild(remove);
+  rows.appendChild(row);
+  input.focus();
+}
+// 路徑一改就存到伺服器, 刪除實驗或重新整理後不會跳回預設 (多加的模型列不存, 預設只記第一個)
 async function saveFile(input) {
+  if (input.dataset.extra) return;
   try {
     await fetch('/api/file-setting', {method: 'POST', body: new URLSearchParams({key: input.name, value: input.value})});
   } catch (err) { /* 存不到就算了, 送出實驗時還會再存一次 */ }
